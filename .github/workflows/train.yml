@@ -1,0 +1,50 @@
+name: ML Training Pipeline
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/train.py'
+      - 'src/monitor.py'
+      - 'requirements.txt'
+  workflow_dispatch:
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install xgboost scikit-learn mlflow evidently psycopg2-binary
+
+      - name: Run training
+        env:
+          MLFLOW_TRACKING_URI: "file:./mlruns"
+        run: python src/train.py
+
+      - name: Run monitoring
+        env:
+          MLFLOW_TRACKING_URI: "file:./mlruns"
+        run: python src/monitor.py
+
+      - name: Upload MLflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlruns
+          path: mlruns/
+
+      - name: Upload drift reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: drift-reports
+          path: reports/

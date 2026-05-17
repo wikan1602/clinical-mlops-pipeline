@@ -1,0 +1,216 @@
+services:
+  airflow-webserver:
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
+    depends_on:
+      - postgres
+      - mlflow # Added dependency
+    environment:
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://admin:mlops_pass@postgres:5432/airflow_db
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW__WEBSERVER__SECRET_KEY=wikan_airflow_secret_key_12345
+      # MLflow & MinIO Connectivity
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - MLFLOW_S3_ENDPOINT_URL=${MLFLOW_S3_ENDPOINT_URL}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ~/projects/clinical-mlops-pipeline/dags:/opt/airflow/dags/clinical_nlp
+      - ~/projects/clinical-mlops-pipeline/src:/opt/airflow/src
+      - ~/projects/clinical-mlops-pipeline/data:/opt/airflow/data
+    ports:
+      - "8080:8080"
+    command: webserver
+    networks:
+      - mlflow-net
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 2G
+
+  airflow-scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
+    depends_on:
+      - postgres
+      - mlflow # Added dependency
+    environment:
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://admin:mlops_pass@postgres:5432/airflow_db
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__WEBSERVER__SECRET_KEY=wikan_airflow_secret_key_12345
+      # MLflow & MinIO Connectivity
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - MLFLOW_S3_ENDPOINT_URL=${MLFLOW_S3_ENDPOINT_URL}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ~/projects/clinical-mlops-pipeline/dags:/opt/airflow/dags/clinical_nlp
+      - ~/projects/clinical-mlops-pipeline/src:/opt/airflow/src
+      - ~/projects/clinical-mlops-pipeline/data:/opt/airflow/data
+    command: scheduler
+    networks:
+      - mlflow-net
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 2G
+
+  postgres:
+    image: postgres:15
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - mlflow-net
+
+  minio:
+    image: minio/minio:latest
+    restart: always
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    networks:
+      - mlflow-net
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      sleep 5;
+      mc alias set local http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD};
+      mc mb --ignore-existing local/${MINIO_BUCKET};
+      exit 0;
+      "
+    networks:
+      - mlflow-net
+
+  mlflow:
+    build: .
+    restart: always
+    depends_on:
+      - postgres
+      - minio
+    environment:
+      MLFLOW_S3_ENDPOINT_URL: ${MLFLOW_S3_ENDPOINT_URL}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+    command: >
+      mlflow server
+      --backend-store-uri postgresql://admin:mlops_pass@postgres:5432/mlflow_db
+      --artifacts-destination s3://${MINIO_BUCKET}
+      --host 0.0.0.0
+      --port 5000
+      --allowed-hosts "*"
+    ports:
+      - "5000:5000"
+    networks:
+      - mlflow-net
+
+  jupyter:
+    image: jupyter/scipy-notebook:latest
+    restart: always
+    ports:
+      - "8888:8888"
+      - "8005:8000"
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MLFLOW_S3_ENDPOINT_URL: ${MLFLOW_S3_ENDPOINT_URL}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+    volumes:
+      # Window 1: The Engine (mlflow-stack)
+      - .:/home/jovyan/work/stack
+      
+      # Window 2: The Research (clinical-mlops-pipeline)
+      # '../' goes up one level to ~/projects/ then into clinical
+      - ../clinical-mlops-pipeline:/home/jovyan/work/clinical
+    networks:
+      - mlflow-net
+
+  redis:
+    image: redis:7-alpine
+    networks:
+      - mlflow-net
+
+  superset:
+    build:
+      context: .
+      dockerfile: Dockerfile.superset
+    container_name: superset_app
+    environment:
+      # This is the "Magic" variable
+      - SUPERSET_CONFIG_PATH=/app/pythonpath/superset_config.py
+    volumes:
+      # Map your local file into the container
+      - ./superset_config.py:/app/pythonpath/superset_config.py
+    depends_on:
+      - postgres
+      - redis
+    ports:
+      - "8088:8088"
+    networks:
+      - mlflow-net
+    
+  trino:
+    image: trinodb/trino:latest
+    ports:
+      - "8082:8080"
+    volumes:
+      - ./trino/catalog:/etc/trino/catalog
+      - ~/projects/clinical-mlops-pipeline/data:/data
+    networks:
+      - mlflow-net
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+  
+  model-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    ports:
+      - "8000:8000"
+    environment:
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - MLFLOW_S3_ENDPOINT_URL=http://minio:9000
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+    depends_on:
+      - mlflow
+      - minio
+    networks:
+      - mlflow-net
+    restart: always  # <--- This makes it "Always-On"
+
+volumes:
+  postgres_data:
+  minio_data:
+  jupyter_data:
+
+networks:
+  mlflow-net:
+    driver: bridge

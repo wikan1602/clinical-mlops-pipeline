@@ -1,0 +1,19 @@
+# Ignore raw and processed clinical data
+data/
+*.csv
+*.csv.gz
+*.parquet
+latest_run_id.txt
+
+# Ignore logs and environment states
+logs/
+.env
+__pycache__/
+*.pyc
+
+# Ignore IDE specific files
+.ipynb_checkpoints/
+.venv/
+
+# ✅ Ignore auto-generated monitoring dashboards
+reports/

@@ -1,0 +1,20 @@
+FROM apache/airflow:2.7.1-python3.10
+
+# Switch to root to install system dependencies if needed
+USER root
+RUN apt-get update && apt-get install -y git && apt-get clean
+
+# Switch back to airflow user
+USER airflow
+
+# Copy and install requirements
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Add boto3 and botocore specifically to ensure S3 connectivity
+RUN pip install --no-cache-dir boto3 botocore
+
+
+# FROM apache/airflow:2.7.1-python3.10
+# COPY requirements.txt .
+# RUN pip install --no-cache-dir -r requirements.txt
